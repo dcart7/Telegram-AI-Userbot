@@ -1,0 +1,15 @@
+group_id: -100XXXXXXXXXXXX
+
+sessions:
+  - "<STRING_SESSION_1>"
+  - "<STRING_SESSION_2>"
+  - "<STRING_SESSION_3>"
+
+admin_session: "<STRING_SESSION_1>"
+
+delay_min: 10
+delay_max: 40
+
+prompt: "Group of friends discussing startups and technology"
+
+context_max_messages: 15
