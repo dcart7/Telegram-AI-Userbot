@@ -21,4 +21,18 @@ delay_max: 40
 
 prompt: "Group of friends discussing startups and technology"
 
-context_max_messages: 15
+context_max_messages: 25
+emoji_probability: 0.25
+short_reply_probability: 0.5
+gif_probability: 0.05
+
+# Optional: list of fallback GIF URLs
+gif_urls:
+  - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"
+
+# Optional: topic keyword -> list of GIF URLs
+gif_topic_map:
+  startups:
+    - "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
+  technology:
+    - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"

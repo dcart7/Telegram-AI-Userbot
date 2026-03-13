@@ -23,6 +23,11 @@ class Config:
     delay_max: int
     prompt: str
     context_max_messages: int
+    emoji_probability: float
+    short_reply_probability: float
+    gif_probability: float
+    gif_urls: List[str]
+    gif_topic_map: Dict[str, List[str]]
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -55,6 +60,11 @@ def load_config(path: str = "config.yaml") -> Config:
         delay_max=int(data["delay_max"]),
         prompt=str(data["prompt"]),
         context_max_messages=int(data.get("context_max_messages", 15)),
+        emoji_probability=float(data.get("emoji_probability", 0.25)),
+        short_reply_probability=float(data.get("short_reply_probability", 0.5)),
+        gif_probability=float(data.get("gif_probability", 0.05)),
+        gif_urls=list(data.get("gif_urls") or []),
+        gif_topic_map=dict(data.get("gif_topic_map") or {}),
     )
 
 
@@ -63,14 +73,52 @@ def choose_next_bot(bot_indices: List[int], last_index: Optional[int]) -> int:
     return random.choice(candidates) if candidates else bot_indices[0]
 
 
-def build_prompt(topic: str, context: List[str]) -> str:
+def build_prompt(
+    style_prompt: str,
+    context: List[str],
+    use_emoji: bool,
+    short_reply: bool,
+) -> str:
     context_text = "\n".join(context)
-    return (
-        f"Topic: {topic}\n\n"
-        "Conversation:\n"
-        f"{context_text}\n\n"
-        "Continue the conversation naturally. Reply in 1-2 short sentences."
+    emoji_rule = (
+        "Optionally add one fitting emoji at the end."
+        if use_emoji
+        else "Do not use emojis."
     )
+    length_rule = (
+        "Reply with a very short message (3-8 words)."
+        if short_reply
+        else "Reply in 1-2 short sentences."
+    )
+    return (
+        "System:\n"
+        "You are a participant in a group chat. Follow the style and topic strictly.\n"
+        f"Style/Topic: {style_prompt}\n\n"
+        "Conversation (latest messages):\n"
+        f"{context_text}\n\n"
+        f"Continue the conversation naturally. {length_rule} {emoji_rule}"
+    )
+
+
+def clamp_short_message(text: str, max_chars: int = 200) -> str:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return ""
+    sentences = []
+    current = []
+    for ch in cleaned:
+        current.append(ch)
+        if ch in ".!?":
+            sentences.append("".join(current).strip())
+            current = []
+        if len(sentences) >= 2:
+            break
+    if not sentences and current:
+        sentences.append("".join(current).strip())
+    result = " ".join(sentences).strip()
+    if len(result) > max_chars:
+        result = result[:max_chars].rstrip()
+    return result
 
 
 async def main() -> None:
@@ -137,14 +185,47 @@ async def main() -> None:
             del context[: len(context) - cfg.context_max_messages]
 
     async def generate_message(topic_value: str, ctx: List[str]) -> str:
-        prompt = build_prompt(topic_value, ctx)
+        use_emoji = random.random() < cfg.emoji_probability
+        short_reply = random.random() < cfg.short_reply_probability
+        prompt = build_prompt(topic_value, ctx, use_emoji, short_reply)
         response = await asyncio.to_thread(
             xai_client.responses.create,
             model="grok-3-fast",
             input=prompt,
         )
         text = response.output_text
-        return text.strip() if text else ""
+        return clamp_short_message(text)
+
+    def choose_gif_url(topic_value: str) -> Optional[str]:
+        topic_lower = topic_value.lower()
+        for key, urls in cfg.gif_topic_map.items():
+            if key.lower() in topic_lower and urls:
+                return random.choice(urls)
+        if cfg.gif_urls:
+            return random.choice(cfg.gif_urls)
+        return None
+
+    async def send_message_or_gif(
+        bot_client: TelegramClient, msg: str, reply_to: Optional[int] = None
+    ) -> None:
+        use_gif = random.random() < cfg.gif_probability
+        gif_url = choose_gif_url(topic) if use_gif else None
+
+        await bot_client.send_chat_action(cfg.group_id, "typing")
+        await asyncio.sleep(random.randint(1, 3))
+
+        if gif_url:
+            caption = msg if len(msg) <= 120 else None
+            await bot_client.send_file(
+                cfg.group_id, gif_url, caption=caption, reply_to=reply_to
+            )
+            bot_me = await bot_client.get_me()
+            add_context(bot_names.get(bot_me.id, "bot"), caption or "sent a GIF")
+            return
+
+        await bot_client.send_message(cfg.group_id, msg, reply_to=reply_to)
+        bot_me = await bot_client.get_me()
+        add_context(bot_names.get(bot_me.id, "bot"), msg)
 
     async def send_reply(reply_to_event, bot_client: TelegramClient) -> None:
         nonlocal topic
@@ -157,11 +238,7 @@ async def main() -> None:
         if not msg:
             return
 
-        await bot_client.send_chat_action(cfg.group_id, "typing")
-        await asyncio.sleep(random.randint(1, 3))
-        await bot_client.send_message(cfg.group_id, msg, reply_to=reply_to_event.message.id)
-        bot_me = await bot_client.get_me()
-        add_context(bot_names.get(bot_me.id, "bot"), msg)
+        await send_message_or_gif(bot_client, msg, reply_to=reply_to_event.message.id)
 
     @admin_client.on(events.NewMessage)
     async def on_admin_private(event) -> None:
@@ -209,11 +286,7 @@ async def main() -> None:
             if not msg:
                 continue
 
-            await bot_client.send_chat_action(cfg.group_id, "typing")
-            await asyncio.sleep(random.randint(1, 3))
-            await bot_client.send_message(cfg.group_id, msg)
-            bot_me = await bot_client.get_me()
-            add_context(bot_names.get(bot_me.id, "bot"), msg)
+            await send_message_or_gif(bot_client, msg)
 
     await conversation_loop()
 
