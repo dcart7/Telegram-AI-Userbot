@@ -16,7 +16,9 @@ from telethon.sessions import StringSession
 class Config:
     group_id: int
     sessions: List[str]
+    session_paths: List[str]
     admin_session: str
+    admin_index: int
     delay_min: int
     delay_max: int
     prompt: str
@@ -34,7 +36,6 @@ def load_config(path: str = "config.yaml") -> Config:
 
     required = [
         "group_id",
-        "sessions",
         "admin_session",
         "delay_min",
         "delay_max",
@@ -46,8 +47,10 @@ def load_config(path: str = "config.yaml") -> Config:
 
     return Config(
         group_id=int(data["group_id"]),
-        sessions=list(data["sessions"]),
+        sessions=list(data.get("sessions") or []),
+        session_paths=list(data.get("session_paths") or []),
         admin_session=str(data["admin_session"]),
+        admin_index=int(data.get("admin_index", -1)),
         delay_min=int(data["delay_min"]),
         delay_max=int(data["delay_max"]),
         prompt=str(data["prompt"]),
@@ -80,19 +83,23 @@ async def main() -> None:
 
     api_id = os.getenv("APP_API_ID")
     api_hash = os.getenv("APP_API_HASH")
-    openai_key = os.getenv("OPENAI_API_KEY")
+    xai_key = os.getenv("XAI_API_KEY")
 
     if not api_id or not api_hash:
         raise ValueError("APP_API_ID and APP_API_HASH must be set in .env")
-    if not openai_key:
-        raise ValueError("OPENAI_API_KEY must be set in .env")
+    if not xai_key:
+        raise ValueError("XAI_API_KEY must be set in .env")
 
     cfg = load_config()
-    client = OpenAI()
+    xai_client = OpenAI(base_url="https://api.x.ai/v1", api_key=xai_key)
 
     clients: List[TelegramClient] = []
-    for session in cfg.sessions:
-        clients.append(TelegramClient(StringSession(session), int(api_id), api_hash))
+    if cfg.session_paths:
+        for path in cfg.session_paths:
+            clients.append(TelegramClient(path, int(api_id), api_hash))
+    else:
+        for session in cfg.sessions:
+            clients.append(TelegramClient(StringSession(session), int(api_id), api_hash))
 
     await asyncio.gather(*(c.start() for c in clients))
 
@@ -104,10 +111,19 @@ async def main() -> None:
         name = me.first_name or me.username or str(me.id)
         bot_names[me.id] = name
 
-    if cfg.admin_session not in cfg.sessions:
-        raise ValueError("admin_session must be one of sessions in config.yaml")
-
-    admin_index = cfg.sessions.index(cfg.admin_session)
+    if cfg.admin_index >= 0:
+        if cfg.admin_index >= len(clients):
+            raise ValueError("admin_index is out of range for configured sessions")
+        admin_index = cfg.admin_index
+    else:
+        if cfg.session_paths:
+            if cfg.admin_session not in cfg.session_paths:
+                raise ValueError("admin_session must be one of session_paths in config.yaml")
+            admin_index = cfg.session_paths.index(cfg.admin_session)
+        else:
+            if cfg.admin_session not in cfg.sessions:
+                raise ValueError("admin_session must be one of sessions in config.yaml")
+            admin_index = cfg.sessions.index(cfg.admin_session)
     admin_client = clients[admin_index]
 
     context: List[str] = []
@@ -123,8 +139,8 @@ async def main() -> None:
     async def generate_message(topic_value: str, ctx: List[str]) -> str:
         prompt = build_prompt(topic_value, ctx)
         response = await asyncio.to_thread(
-            client.responses.create,
-            model="gpt-4.1-mini",
+            xai_client.responses.create,
+            model="grok-3-fast",
             input=prompt,
         )
         text = response.output_text

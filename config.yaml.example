@@ -1,11 +1,20 @@
 group_id: -100XXXXXXXXXXXX
 
+# Option A: string sessions (Telethon StringSession)
 sessions:
   - "<STRING_SESSION_1>"
   - "<STRING_SESSION_2>"
   - "<STRING_SESSION_3>"
 
+# Option B: path to .session files (Telethon SQLite sessions)
+session_paths:
+  - "/full/path/to/first.session"
+  - "/full/path/to/second.session"
+
+# Admin selection:
+# Either set admin_session to match one entry above, or set admin_index.
 admin_session: "<STRING_SESSION_1>"
+admin_index: -1
 
 delay_min: 10
 delay_max: 40
