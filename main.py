@@ -28,6 +28,7 @@ class Config:
     gif_probability: float
     gif_urls: List[str]
     gif_topic_map: Dict[str, List[str]]
+    bot_personas: List[str]
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -65,6 +66,7 @@ def load_config(path: str = "config.yaml") -> Config:
         gif_probability=float(data.get("gif_probability", 0.05)),
         gif_urls=list(data.get("gif_urls") or []),
         gif_topic_map=dict(data.get("gif_topic_map") or {}),
+        bot_personas=list(data.get("bot_personas") or []),
     )
 
 
@@ -78,6 +80,7 @@ def build_prompt(
     context: List[str],
     use_emoji: bool,
     short_reply: bool,
+    persona: str,
 ) -> str:
     context_text = "\n".join(context)
     emoji_rule = (
@@ -90,9 +93,11 @@ def build_prompt(
         if short_reply
         else "Reply in 1-2 short sentences."
     )
+    persona_line = f"Persona: {persona}\n" if persona else ""
     return (
         "System:\n"
         "You are a participant in a group chat. Follow the style and topic strictly.\n"
+        f"{persona_line}"
         f"Style/Topic: {style_prompt}\n\n"
         "Conversation (latest messages):\n"
         f"{context_text}\n\n"
@@ -153,9 +158,11 @@ async def main() -> None:
 
     bot_ids: Dict[int, TelegramClient] = {}
     bot_names: Dict[int, str] = {}
-    for c in clients:
+    bot_index_by_id: Dict[int, int] = {}
+    for idx, c in enumerate(clients):
         me = await c.get_me()
         bot_ids[me.id] = c
+        bot_index_by_id[me.id] = idx
         name = me.first_name or me.username or str(me.id)
         bot_names[me.id] = name
 
@@ -184,10 +191,15 @@ async def main() -> None:
         if len(context) > cfg.context_max_messages:
             del context[: len(context) - cfg.context_max_messages]
 
-    async def generate_message(topic_value: str, ctx: List[str]) -> str:
+    def get_persona(idx: int) -> str:
+        if 0 <= idx < len(cfg.bot_personas):
+            return str(cfg.bot_personas[idx]).strip()
+        return ""
+
+    async def generate_message(topic_value: str, ctx: List[str], persona: str) -> str:
         use_emoji = random.random() < cfg.emoji_probability
         short_reply = random.random() < cfg.short_reply_probability
-        prompt = build_prompt(topic_value, ctx, use_emoji, short_reply)
+        prompt = build_prompt(topic_value, ctx, use_emoji, short_reply, persona)
         response = await asyncio.to_thread(
             xai_client.responses.create,
             model="grok-3-fast",
@@ -227,14 +239,17 @@ async def main() -> None:
         bot_me = await bot_client.get_me()
         add_context(bot_names.get(bot_me.id, "bot"), msg)
 
-    async def send_reply(reply_to_event, bot_client: TelegramClient) -> None:
+    async def send_reply(
+        reply_to_event, bot_client: TelegramClient, bot_idx: int
+    ) -> None:
         nonlocal topic
         text = reply_to_event.message.message or ""
         sender = await reply_to_event.get_sender()
         sender_name = sender.first_name or sender.username or str(sender.id)
         add_context(sender_name, text)
 
-        msg = await generate_message(topic, context)
+        persona = get_persona(bot_idx)
+        msg = await generate_message(topic, context, persona)
         if not msg:
             return
 
@@ -268,7 +283,8 @@ async def main() -> None:
             reply_msg = await event.get_reply_message()
             if reply_msg and reply_msg.sender_id in bot_ids:
                 bot_client = bot_ids[reply_msg.sender_id]
-                await send_reply(event, bot_client)
+                bot_idx = bot_index_by_id.get(reply_msg.sender_id, -1)
+                await send_reply(event, bot_client, bot_idx)
 
     async def conversation_loop() -> None:
         last_index: Optional[int] = None
@@ -282,7 +298,8 @@ async def main() -> None:
             last_index = idx
             bot_client = clients[idx]
 
-            msg = await generate_message(topic, context)
+            persona = get_persona(idx)
+            msg = await generate_message(topic, context, persona)
             if not msg:
                 continue
 

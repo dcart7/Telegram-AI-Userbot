@@ -26,6 +26,11 @@ emoji_probability: 0.25
 short_reply_probability: 0.5
 gif_probability: 0.05
 
+# Optional: per-bot personas in the same order as sessions/session_paths
+bot_personas:
+  - "Thoughtful and playful; reflects a bit, then shares lighthearted everyday AI uses."
+  - "Skeptical and pragmatic; questions hype and focuses on limitations and tradeoffs."
+
 # Optional: list of fallback GIF URLs
 gif_urls:
   - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"
