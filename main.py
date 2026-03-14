@@ -99,6 +99,13 @@ def build_prompt(
         else "Reply in 1-2 short sentences."
     )
     persona_line = f"Persona: {persona}\n" if persona else ""
+    variety_rules = (
+        "Avoid repeating the last speaker or their phrasing. "
+        "Don't start with the same filler as the previous bot. "
+        "Add a light, playful or ironic touch occasionally. "
+        "Sometimes ask a short follow-up question. "
+        "Keep it natural and human, not overly formal."
+    )
     return (
         "System:\n"
         "You are a participant in a group chat. Follow the style and topic strictly.\n"
@@ -106,11 +113,14 @@ def build_prompt(
         f"Style/Topic: {style_prompt}\n\n"
         "Conversation (latest messages):\n"
         f"{context_text}\n\n"
-        f"Continue the conversation naturally. {length_rule} {emoji_rule}"
+        f"Continue the conversation naturally. {length_rule} {emoji_rule}\n"
+        f"Additional rules: {variety_rules}"
     )
 
 
-def clamp_short_message(text: str, max_chars: int = 600) -> str:
+def clamp_short_message(
+    text: str, max_chars: int = 800, max_words: int = 60
+) -> str:
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         return ""
@@ -126,12 +136,15 @@ def clamp_short_message(text: str, max_chars: int = 600) -> str:
     if not sentences and current:
         sentences.append("".join(current).strip())
     result = " ".join(sentences).strip()
+    words = result.split()
+    if len(words) > max_words:
+        result = " ".join(words[:max_words]).rstrip() + "…"
     if len(result) > max_chars:
         cut = result[:max_chars].rstrip()
         last_space = cut.rfind(" ")
         if last_space > 0:
             cut = cut[:last_space].rstrip()
-        result = cut
+        result = cut + "…"
     return result
 
 
