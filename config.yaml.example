@@ -31,6 +31,10 @@ bot_personas:
   - "Thoughtful and playful; reflects a bit, then shares lighthearted everyday AI uses."
   - "Skeptical and pragmatic; questions hype and focuses on limitations and tradeoffs."
 
+# Optional: Redis for shared context storage
+redis_url: "redis://localhost:6379/0"
+redis_key_prefix: "tg_userbot"
+
 # Optional: list of fallback GIF URLs
 gif_urls:
   - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"

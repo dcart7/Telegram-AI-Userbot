@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
+from redis.asyncio import Redis
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -29,6 +30,8 @@ class Config:
     gif_urls: List[str]
     gif_topic_map: Dict[str, List[str]]
     bot_personas: List[str]
+    redis_url: str
+    redis_key_prefix: str
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -67,6 +70,8 @@ def load_config(path: str = "config.yaml") -> Config:
         gif_urls=list(data.get("gif_urls") or []),
         gif_topic_map=dict(data.get("gif_topic_map") or {}),
         bot_personas=list(data.get("bot_personas") or []),
+        redis_url=str(data.get("redis_url", "")).strip(),
+        redis_key_prefix=str(data.get("redis_key_prefix", "tg_userbot")).strip(),
     )
 
 
@@ -105,7 +110,7 @@ def build_prompt(
     )
 
 
-def clamp_short_message(text: str, max_chars: int = 200) -> str:
+def clamp_short_message(text: str, max_chars: int = 600) -> str:
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         return ""
@@ -122,8 +127,63 @@ def clamp_short_message(text: str, max_chars: int = 200) -> str:
         sentences.append("".join(current).strip())
     result = " ".join(sentences).strip()
     if len(result) > max_chars:
-        result = result[:max_chars].rstrip()
+        cut = result[:max_chars].rstrip()
+        last_space = cut.rfind(" ")
+        if last_space > 0:
+            cut = cut[:last_space].rstrip()
+        result = cut
     return result
+
+
+class ContextStore:
+    async def add(self, speaker: str, text: str) -> None:
+        raise NotImplementedError
+
+    async def get_recent(self) -> List[str]:
+        raise NotImplementedError
+
+    async def clear(self) -> None:
+        raise NotImplementedError
+
+
+class MemoryContextStore(ContextStore):
+    def __init__(self, max_messages: int) -> None:
+        self._context: List[str] = []
+        self._max = max_messages
+
+    async def add(self, speaker: str, text: str) -> None:
+        if not text:
+            return
+        self._context.append(f"{speaker}: {text}")
+        if len(self._context) > self._max:
+            del self._context[: len(self._context) - self._max]
+
+    async def get_recent(self) -> List[str]:
+        return list(self._context)
+
+    async def clear(self) -> None:
+        self._context.clear()
+
+
+class RedisContextStore(ContextStore):
+    def __init__(self, redis: Redis, key: str, max_messages: int) -> None:
+        self._redis = redis
+        self._key = key
+        self._max = max_messages
+
+    async def add(self, speaker: str, text: str) -> None:
+        if not text:
+            return
+        value = f"{speaker}: {text}"
+        await self._redis.rpush(self._key, value)
+        await self._redis.ltrim(self._key, -self._max, -1)
+
+    async def get_recent(self) -> List[str]:
+        items = await self._redis.lrange(self._key, 0, -1)
+        return [str(x) for x in items]
+
+    async def clear(self) -> None:
+        await self._redis.delete(self._key)
 
 
 async def main() -> None:
@@ -181,15 +241,20 @@ async def main() -> None:
             admin_index = cfg.sessions.index(cfg.admin_session)
     admin_client = clients[admin_index]
 
-    context: List[str] = []
     topic = cfg.prompt
-
-    def add_context(speaker: str, text: str) -> None:
-        if not text:
-            return
-        context.append(f"{speaker}: {text}")
-        if len(context) > cfg.context_max_messages:
-            del context[: len(context) - cfg.context_max_messages]
+    context_store: ContextStore
+    if cfg.redis_url:
+        redis = Redis.from_url(cfg.redis_url, decode_responses=True)
+        try:
+            await redis.ping()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Redis unavailable at {cfg.redis_url}: {exc}"
+            ) from exc
+        key = f"{cfg.redis_key_prefix}:group:{cfg.group_id}:context"
+        context_store = RedisContextStore(redis, key, cfg.context_max_messages)
+    else:
+        context_store = MemoryContextStore(cfg.context_max_messages)
 
     def get_persona(idx: int) -> str:
         if 0 <= idx < len(cfg.bot_personas):
@@ -223,8 +288,8 @@ async def main() -> None:
         use_gif = random.random() < cfg.gif_probability
         gif_url = choose_gif_url(topic) if use_gif else None
 
-        await bot_client.send_chat_action(cfg.group_id, "typing")
-        await asyncio.sleep(random.randint(1, 3))
+        async with bot_client.action(cfg.group_id, "typing"):
+            await asyncio.sleep(random.randint(1, 3))
 
         if gif_url:
             caption = msg if len(msg) <= 120 else None
@@ -232,12 +297,26 @@ async def main() -> None:
                 cfg.group_id, gif_url, caption=caption, reply_to=reply_to
             )
             bot_me = await bot_client.get_me()
-            add_context(bot_names.get(bot_me.id, "bot"), caption or "sent a GIF")
+            logging.info(
+                "Sent GIF as %s (reply_to=%s): %s",
+                bot_names.get(bot_me.id, "bot"),
+                reply_to,
+                caption or "sent a GIF",
+            )
+            await context_store.add(
+                bot_names.get(bot_me.id, "bot"), caption or "sent a GIF"
+            )
             return
 
         await bot_client.send_message(cfg.group_id, msg, reply_to=reply_to)
         bot_me = await bot_client.get_me()
-        add_context(bot_names.get(bot_me.id, "bot"), msg)
+        logging.info(
+            "Sent message as %s (reply_to=%s): %s",
+            bot_names.get(bot_me.id, "bot"),
+            reply_to,
+            msg,
+        )
+        await context_store.add(bot_names.get(bot_me.id, "bot"), msg)
 
     async def send_reply(
         reply_to_event, bot_client: TelegramClient, bot_idx: int
@@ -246,10 +325,16 @@ async def main() -> None:
         text = reply_to_event.message.message or ""
         sender = await reply_to_event.get_sender()
         sender_name = sender.first_name or sender.username or str(sender.id)
-        add_context(sender_name, text)
+        logging.info(
+            "Incoming reply from %s: %s",
+            sender_name,
+            text,
+        )
+        await context_store.add(sender_name, text)
 
         persona = get_persona(bot_idx)
-        msg = await generate_message(topic, context, persona)
+        ctx = await context_store.get_recent()
+        msg = await generate_message(topic, ctx, persona)
         if not msg:
             return
 
@@ -257,14 +342,14 @@ async def main() -> None:
 
     @admin_client.on(events.NewMessage)
     async def on_admin_private(event) -> None:
-        nonlocal topic, context
+        nonlocal topic
         if not event.is_private or event.out:
             return
         new_topic = (event.message.message or "").strip()
         if not new_topic:
             return
         topic = new_topic
-        context.clear()
+        await context_store.clear()
         await admin_client.send_message(cfg.group_id, f"New topic: {topic}")
         logging.info("Topic changed to: %s", topic)
 
@@ -277,7 +362,8 @@ async def main() -> None:
         text = event.message.message or ""
         sender = await event.get_sender()
         sender_name = sender.first_name or sender.username or str(sender.id)
-        add_context(sender_name, text)
+        logging.info("Incoming message from %s: %s", sender_name, text)
+        await context_store.add(sender_name, text)
 
         if event.is_reply:
             reply_msg = await event.get_reply_message()
@@ -299,7 +385,8 @@ async def main() -> None:
             bot_client = clients[idx]
 
             persona = get_persona(idx)
-            msg = await generate_message(topic, context, persona)
+            ctx = await context_store.get_recent()
+            msg = await generate_message(topic, ctx, persona)
             if not msg:
                 continue
 

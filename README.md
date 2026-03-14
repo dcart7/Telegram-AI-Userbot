@@ -60,6 +60,9 @@ gif_probability: 0.05
 bot_personas:
   - "Thoughtful and playful; reflects a bit, then shares lighthearted everyday AI uses."
   - "Skeptical and pragmatic; questions hype and focuses on limitations and tradeoffs."
+
+redis_url: "redis://localhost:6379/0"
+redis_key_prefix: "tg_userbot"
 ```
 
 ## Environment
@@ -79,6 +82,7 @@ venv/bin/python main.py
 - Keep `.env`, `.session`, and `config.yaml` out of Git.
 - If you need string sessions, generate them via Telethon once per account.
 - GIFs use public URLs; replace with your own lists per topic in `config.yaml`.
+- If `redis_url` is set, Redis stores the shared context (recommended for persistence).
 
 ## Mini-presentation (summary)
 **Architecture**
