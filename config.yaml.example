@@ -1,5 +1,16 @@
 group_id: -100XXXXXXXXXXXX
 
+# Option C: multiple groups (if set, group_id/prompt/delays above are ignored)
+groups:
+  - group_id: -1001111111111
+    prompt: "Group of friends discussing startups and technology"
+    delay_min: 10
+    delay_max: 40
+  - group_id: -1002222222222
+    prompt: "Casual chat about music, movies, and everyday life"
+    delay_min: 12
+    delay_max: 45
+
 # Option A: string sessions (Telethon StringSession)
 sessions:
   - "<STRING_SESSION_1>"

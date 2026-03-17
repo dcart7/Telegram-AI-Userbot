@@ -25,7 +25,7 @@ venv/bin/pip install -r requirements.txt
 ## Configuration
 Create `config.yaml` from `config.yaml.example` and fill real values.
 
-Minimal fields:
+Minimal fields (single group):
 - `group_id`: target group id (usually `-100...`)
 - `prompt`: shared style/topic prompt
 - `delay_min`, `delay_max`
@@ -64,6 +64,25 @@ bot_personas:
 redis_url: "redis://localhost:6379/0"
 redis_key_prefix: "tg_userbot"
 ```
+
+Multi-group example (optional):
+```yaml
+groups:
+  - group_id: -1001111111111
+    prompt: "Group of friends discussing startups and technology"
+    delay_min: 10
+    delay_max: 40
+  - group_id: -1002222222222
+    prompt: "Casual chat about music, movies, and everyday life"
+    delay_min: 12
+    delay_max: 45
+```
+
+Admin topic change:
+- Send a private message to the admin account.
+- If you have multiple groups, you can target a group by prefixing:  
+  `-1001234567890: new topic here`  
+  Otherwise, the topic is applied to all configured groups.
 
 ## Environment
 Create `.env` based on `.env.example`:

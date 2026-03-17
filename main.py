@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 from dotenv import load_dotenv
@@ -16,15 +16,20 @@ from telethon.tl.types import ReactionEmoji
 
 
 @dataclass
-class Config:
+class GroupConfig:
     group_id: int
+    prompt: str
+    delay_min: int
+    delay_max: int
+
+
+@dataclass
+class Config:
+    groups: List[GroupConfig]
     sessions: List[str]
     session_paths: List[str]
     admin_session: str
     admin_index: int
-    delay_min: int
-    delay_max: int
-    prompt: str
     context_max_messages: int
     emoji_probability: float
     short_reply_probability: float
@@ -48,25 +53,46 @@ def load_config(path: str = "config.yaml") -> Config:
         data = yaml.safe_load(f) or {}
 
     required = [
-        "group_id",
         "admin_session",
         "delay_min",
         "delay_max",
         "prompt",
     ]
     missing = [k for k in required if k not in data]
-    if missing:
+    if missing and "groups" not in data:
         raise ValueError(f"Missing config keys: {', '.join(missing)}")
 
+    groups: List[GroupConfig] = []
+    if data.get("groups"):
+        for item in data["groups"]:
+            group_id = int(item["group_id"])
+            prompt = str(item["prompt"])
+            delay_min = int(item.get("delay_min", data.get("delay_min", 10)))
+            delay_max = int(item.get("delay_max", data.get("delay_max", 40)))
+            groups.append(
+                GroupConfig(
+                    group_id=group_id,
+                    prompt=prompt,
+                    delay_min=delay_min,
+                    delay_max=delay_max,
+                )
+            )
+    else:
+        groups.append(
+            GroupConfig(
+                group_id=int(data["group_id"]),
+                prompt=str(data["prompt"]),
+                delay_min=int(data["delay_min"]),
+                delay_max=int(data["delay_max"]),
+            )
+        )
+
     return Config(
-        group_id=int(data["group_id"]),
+        groups=groups,
         sessions=list(data.get("sessions") or []),
         session_paths=list(data.get("session_paths") or []),
         admin_session=str(data["admin_session"]),
         admin_index=int(data.get("admin_index", -1)),
-        delay_min=int(data["delay_min"]),
-        delay_max=int(data["delay_max"]),
-        prompt=str(data["prompt"]),
         context_max_messages=int(data.get("context_max_messages", 15)),
         emoji_probability=float(data.get("emoji_probability", 0.25)),
         short_reply_probability=float(data.get("short_reply_probability", 0.5)),
@@ -87,7 +113,8 @@ def choose_next_bot(bot_indices: List[int], last_index: Optional[int]) -> int:
 
 
 def build_prompt(
-    style_prompt: str,
+    base_prompt: str,
+    topic_prompt: str,
     context: List[str],
     use_emoji: bool,
     short_reply: bool,
@@ -112,17 +139,17 @@ def build_prompt(
         "Sometimes ask a short follow-up question. "
         "Keep it natural and human, not overly formal."
     )
-    language_rule = "All replies must be in Russian."
-    greeting_rule = "Do not use greetings or farewells in every message, only first and last (no 'привет', 'здравствуйте', 'пока', etc.)."
+    greeting_rule = "Do not use greetings or farewells in every message, only occasionally."
     return (
         "System:\n"
         "You are a participant in a group chat. Follow the style and topic strictly.\n"
         f"{persona_line}"
-        f"Style/Topic: {style_prompt}\n\n"
+        f"Style: {base_prompt}\n"
+        f"Current topic: {topic_prompt}\n\n"
         "Conversation (latest messages):\n"
         f"{context_text}\n\n"
         f"Continue the conversation naturally. {length_rule} {emoji_rule}\n"
-        f"Additional rules: {variety_rules} {language_rule} {greeting_rule}"
+        f"Additional rules: {variety_rules} {greeting_rule}"
     )
 
 
@@ -262,8 +289,8 @@ async def main() -> None:
             admin_index = cfg.sessions.index(cfg.admin_session)
     admin_client = clients[admin_index]
 
-    topic = cfg.prompt
-    context_store: ContextStore
+    group_states: Dict[int, Dict[str, object]] = {}
+    redis: Optional[Redis] = None
     if cfg.redis_url:
         redis = Redis.from_url(cfg.redis_url, decode_responses=True)
         try:
@@ -272,20 +299,36 @@ async def main() -> None:
             raise RuntimeError(
                 f"Redis unavailable at {cfg.redis_url}: {exc}"
             ) from exc
-        key = f"{cfg.redis_key_prefix}:group:{cfg.group_id}:context"
-        context_store = RedisContextStore(redis, key, cfg.context_max_messages)
-    else:
-        context_store = MemoryContextStore(cfg.context_max_messages)
+
+    for group in cfg.groups:
+        if redis:
+            key = f"{cfg.redis_key_prefix}:group:{group.group_id}:context"
+            context_store: ContextStore = RedisContextStore(
+                redis, key, cfg.context_max_messages
+            )
+        else:
+            context_store = MemoryContextStore(cfg.context_max_messages)
+
+        group_states[group.group_id] = {
+            "base_prompt": group.prompt,
+            "topic": group.prompt,
+            "context_store": context_store,
+            "last_index": None,
+            "delay_min": group.delay_min,
+            "delay_max": group.delay_max,
+        }
 
     def get_persona(idx: int) -> str:
         if 0 <= idx < len(cfg.bot_personas):
             return str(cfg.bot_personas[idx]).strip()
         return ""
 
-    async def generate_message(topic_value: str, ctx: List[str], persona: str) -> str:
+    async def generate_message(
+        base_prompt: str, topic_value: str, ctx: List[str], persona: str
+    ) -> str:
         use_emoji = random.random() < cfg.emoji_probability
         short_reply = random.random() < cfg.short_reply_probability
-        prompt = build_prompt(topic_value, ctx, use_emoji, short_reply, persona)
+        prompt = build_prompt(base_prompt, topic_value, ctx, use_emoji, short_reply, persona)
         response = await asyncio.to_thread(
             xai_client.responses.create,
             model="grok-3-fast",
@@ -304,18 +347,23 @@ async def main() -> None:
         return None
 
     async def send_message_or_gif(
-        bot_client: TelegramClient, msg: str, reply_to: Optional[int] = None
+        group_id: int,
+        bot_client: TelegramClient,
+        msg: str,
+        reply_to: Optional[int] = None,
     ) -> None:
+        state = group_states[group_id]
+        topic = str(state["topic"])
         use_gif = random.random() < cfg.gif_probability
         gif_url = choose_gif_url(topic) if use_gif else None
 
-        async with bot_client.action(cfg.group_id, "typing"):
+        async with bot_client.action(group_id, "typing"):
             await asyncio.sleep(random.randint(1, 3))
 
         if gif_url:
             caption = msg if len(msg) <= 120 else None
             await bot_client.send_file(
-                cfg.group_id, gif_url, caption=caption, reply_to=reply_to
+                group_id, gif_url, caption=caption, reply_to=reply_to
             )
             bot_me = await bot_client.get_me()
             logging.info(
@@ -324,12 +372,14 @@ async def main() -> None:
                 reply_to,
                 caption or "sent a GIF",
             )
+            context_store = state["context_store"]
             await context_store.add(
                 bot_names.get(bot_me.id, "bot"), caption or "sent a GIF"
             )
+            state["last_index"] = bot_index_by_id.get(bot_me.id)
             return
 
-        await bot_client.send_message(cfg.group_id, msg, reply_to=reply_to)
+        await bot_client.send_message(group_id, msg, reply_to=reply_to)
         bot_me = await bot_client.get_me()
         logging.info(
             "Sent message as %s (reply_to=%s): %s",
@@ -337,12 +387,14 @@ async def main() -> None:
             reply_to,
             msg,
         )
+        context_store = state["context_store"]
         await context_store.add(bot_names.get(bot_me.id, "bot"), msg)
+        state["last_index"] = bot_index_by_id.get(bot_me.id)
 
     async def send_reply(
-        reply_to_event, bot_client: TelegramClient, bot_idx: int
+        group_id: int, reply_to_event, bot_client: TelegramClient, bot_idx: int
     ) -> None:
-        nonlocal topic
+        state = group_states[group_id]
         text = reply_to_event.message.message or ""
         sender = await reply_to_event.get_sender()
         sender_name = sender.first_name or sender.username or str(sender.id)
@@ -351,15 +403,20 @@ async def main() -> None:
             sender_name,
             text,
         )
+        context_store = state["context_store"]
         await context_store.add(sender_name, text)
 
         persona = get_persona(bot_idx)
         ctx = await context_store.get_recent()
-        msg = await generate_message(topic, ctx, persona)
+        base_prompt = str(state["base_prompt"])
+        topic = str(state["topic"])
+        msg = await generate_message(base_prompt, topic, ctx, persona)
         if not msg:
             return
 
-        await send_message_or_gif(bot_client, msg, reply_to=reply_to_event.message.id)
+        await send_message_or_gif(
+            group_id, bot_client, msg, reply_to=reply_to_event.message.id
+        )
 
     async def maybe_react(event) -> None:
         if random.random() >= cfg.reaction_probability:
@@ -371,7 +428,7 @@ async def main() -> None:
         try:
             reactor = random.choice(clients)
             reaction = random.choice(cfg.reaction_emojis)
-            peer = await reactor.get_input_entity(cfg.group_id)
+            peer = await reactor.get_input_entity(event.chat_id)
             await reactor(
                 SendReactionRequest(
                     peer=peer,
@@ -394,60 +451,111 @@ async def main() -> None:
                 exc.__class__.__name__,
             )
 
+    def parse_admin_topic(text: str) -> Tuple[List[int], str]:
+        cleaned = text.strip()
+        if ":" in cleaned:
+            prefix, rest = cleaned.split(":", 1)
+            try:
+                group_id = int(prefix.strip())
+                if group_id in group_states:
+                    return [group_id], rest.strip()
+            except ValueError:
+                pass
+        return list(group_states.keys()), cleaned
+
     @admin_client.on(events.NewMessage)
     async def on_admin_private(event) -> None:
-        nonlocal topic
         if not event.is_private or event.out:
             return
         new_topic = (event.message.message or "").strip()
         if not new_topic:
             return
-        topic = new_topic
-        await context_store.clear()
-        await admin_client.send_message(cfg.group_id, f"New topic: {topic}")
-        logging.info("Topic changed to: %s", topic)
+        target_groups, topic_text = parse_admin_topic(new_topic)
+        if not topic_text:
+            return
+
+        for group_id in target_groups:
+            state = group_states[group_id]
+            state["topic"] = topic_text
+            context_store = state["context_store"]
+            await context_store.clear()
+
+            admin_name = bot_names.get((await admin_client.get_me()).id, "admin")
+            ctx = []
+            base_prompt = str(state["base_prompt"])
+            msg = await generate_message(base_prompt, topic_text, ctx, "")
+            msg = msg or f"{admin_name}: {topic_text}"
+            await send_message_or_gif(group_id, admin_client, msg)
+            logging.info("Topic changed to: %s (group %s)", topic_text, group_id)
 
     listener_client = admin_client
 
-    @listener_client.on(events.NewMessage(chats=cfg.group_id))
-    async def on_group_message(event) -> None:
-        if event.out:
-            return
-        text = event.message.message or ""
-        sender = await event.get_sender()
-        sender_name = sender.first_name or sender.username or str(sender.id)
-        logging.info("Incoming message from %s: %s", sender_name, text)
-        await context_store.add(sender_name, text)
-        await maybe_react(event)
+    def resolve_sender_id(message) -> Optional[int]:
+        sender_id = getattr(message, "sender_id", None)
+        if sender_id:
+            return sender_id
+        from_id = getattr(message, "from_id", None)
+        if from_id and getattr(from_id, "user_id", None):
+            return from_id.user_id
+        return None
 
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            if reply_msg and reply_msg.sender_id in bot_ids:
-                bot_client = bot_ids[reply_msg.sender_id]
-                bot_idx = bot_index_by_id.get(reply_msg.sender_id, -1)
-                await send_reply(event, bot_client, bot_idx)
+    def register_group_handler(group_id: int) -> None:
+        @listener_client.on(events.NewMessage(chats=group_id))
+        async def on_group_message(event) -> None:
+            if event.out:
+                return
+            text = event.message.message or ""
+            sender = await event.get_sender()
+            sender_name = sender.first_name or sender.username or str(sender.id)
+            logging.info("Incoming message from %s: %s", sender_name, text)
 
-    async def conversation_loop() -> None:
-        last_index: Optional[int] = None
+            state = group_states[group_id]
+            context_store = state["context_store"]
+            await context_store.add(sender_name, text)
+            await maybe_react(event)
+
+            if event.is_reply:
+                reply_msg = await event.get_reply_message()
+                if reply_msg:
+                    sender_id = resolve_sender_id(reply_msg)
+                    if sender_id in bot_ids:
+                        bot_client = bot_ids[sender_id]
+                        bot_idx = bot_index_by_id.get(sender_id, -1)
+                        await send_reply(group_id, event, bot_client, bot_idx)
+                    else:
+                        state = group_states[group_id]
+                        last_index = state["last_index"]
+                        idx = choose_next_bot(list(range(len(clients))), last_index)
+                        bot_client = clients[idx]
+                        await send_reply(group_id, event, bot_client, idx)
+
+    for group_id in group_states:
+        register_group_handler(group_id)
+
+    async def conversation_loop(group_id: int) -> None:
+        state = group_states[group_id]
         bot_indices = list(range(len(clients)))
 
         while True:
-            delay = random.randint(cfg.delay_min, cfg.delay_max)
+            delay = random.randint(int(state["delay_min"]), int(state["delay_max"]))
             await asyncio.sleep(delay)
 
+            last_index = state["last_index"]
             idx = choose_next_bot(bot_indices, last_index)
-            last_index = idx
             bot_client = clients[idx]
 
             persona = get_persona(idx)
+            context_store = state["context_store"]
             ctx = await context_store.get_recent()
-            msg = await generate_message(topic, ctx, persona)
+            base_prompt = str(state["base_prompt"])
+            topic = str(state["topic"])
+            msg = await generate_message(base_prompt, topic, ctx, persona)
             if not msg:
                 continue
 
-            await send_message_or_gif(bot_client, msg)
+            await send_message_or_gif(group_id, bot_client, msg)
 
-    await conversation_loop()
+    await asyncio.gather(*(conversation_loop(gid) for gid in group_states.keys()))
 
 
 if __name__ == "__main__":
