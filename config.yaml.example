@@ -5,11 +5,16 @@ sessions:
   - "<STRING_SESSION_1>"
   - "<STRING_SESSION_2>"
   - "<STRING_SESSION_3>"
+  - "<STRING_SESSION_4>"
+  - "<STRING_SESSION_5>"
 
 # Option B: path to .session files (Telethon SQLite sessions)
 session_paths:
   - "/full/path/to/first.session"
   - "/full/path/to/second.session"
+  - "/full/path/to/third.session"
+  - "/full/path/to/fourth.session"
+  - "/full/path/to/fifth.session"
 
 # Admin selection:
 # Either set admin_session to match one entry above, or set admin_index.
@@ -25,11 +30,17 @@ context_max_messages: 25
 emoji_probability: 0.25
 short_reply_probability: 0.5
 gif_probability: 0.05
+reaction_probability: 0.12
+reaction_emojis:
+  - "👍"
 
 # Optional: per-bot personas in the same order as sessions/session_paths
 bot_personas:
   - "Thoughtful and playful; reflects a bit, then shares lighthearted everyday AI uses."
   - "Skeptical and pragmatic; questions hype and focuses on limitations and tradeoffs."
+  - "Occasionally drifts off-topic in a natural way, then gently brings it back."
+  - "Mysterious and enigmatic; speaks in short, intriguing hints."
+  - "Bold and a bit unhinged; energetic, playful, and impulsive."
 
 # Optional: Redis for shared context storage
 redis_url: "redis://localhost:6379/0"

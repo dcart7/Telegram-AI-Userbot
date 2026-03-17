@@ -5,8 +5,10 @@ import yaml
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.tl.functions.channels import InviteToChannelRequest
+from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.functions.messages import AddChatUserRequest
 from telethon.tl.types import Chat
+from telethon.tl.types import InputPhoneContact
 from telethon.sessions import StringSession
 
 load_dotenv()
@@ -25,10 +27,7 @@ def load_config(path: str = "config.yaml") -> dict:
 
 async def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: add_user.py <username>")
-    username = sys.argv[1].lstrip("@").strip()
-    if not username:
-        raise SystemExit("Username cannot be empty")
+        raise SystemExit("Usage: add_user.py <username_or_phone> [more...]")
     if not api_id or not api_hash:
         raise ValueError("APP_API_ID и APP_API_HASH должны быть в .env")
 
@@ -56,14 +55,47 @@ async def main() -> None:
         else:
             raise ValueError("admin_session must match configured sessions/session_paths")
     await client.start()
-    user = await client.get_input_entity(username)
+    async def resolve_user(identifier: str):
+        value = identifier.strip()
+        if not value:
+            raise ValueError("Identifier cannot be empty")
+        if value.startswith("@"):
+            value = value[1:]
+        is_phone = value.startswith("+") or value.isdigit()
+        if not is_phone:
+            return await client.get_input_entity(value)
+
+        result = await client(
+            ImportContactsRequest(
+                [
+                    InputPhoneContact(
+                        client_id=0,
+                        phone=value,
+                        first_name="Temp",
+                        last_name="Contact",
+                    )
+                ]
+            )
+        )
+        if result.users:
+            return await client.get_input_entity(result.users[0])
+        raise ValueError(
+            f"Не удалось найти пользователя по номеру {value}. "
+            "Проверь номер или добавь username."
+        )
+
     entity = await client.get_entity(group_id)
-    if isinstance(entity, Chat):
-        await client(AddChatUserRequest(chat_id=entity.id, user_id=user, fwd_limit=10))
-    else:
-        await client(InviteToChannelRequest(channel=entity, users=[user]))
+    for identifier in sys.argv[1:]:
+        user = await resolve_user(identifier)
+        if isinstance(entity, Chat):
+            await client(
+                AddChatUserRequest(chat_id=entity.id, user_id=user, fwd_limit=10)
+            )
+        else:
+            await client(InviteToChannelRequest(channel=entity, users=[user]))
+        print(f"Added: {identifier}")
     await client.disconnect()
-    print("Added")
+    print("Done")
 
 
 if __name__ == "__main__":

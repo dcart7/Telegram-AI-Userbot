@@ -27,6 +27,8 @@ class Config:
     emoji_probability: float
     short_reply_probability: float
     gif_probability: float
+    reaction_probability: float
+    reaction_emojis: List[str]
     gif_urls: List[str]
     gif_topic_map: Dict[str, List[str]]
     bot_personas: List[str]
@@ -67,6 +69,8 @@ def load_config(path: str = "config.yaml") -> Config:
         emoji_probability=float(data.get("emoji_probability", 0.25)),
         short_reply_probability=float(data.get("short_reply_probability", 0.5)),
         gif_probability=float(data.get("gif_probability", 0.05)),
+        reaction_probability=float(data.get("reaction_probability", 0.12)),
+        reaction_emojis=list(data.get("reaction_emojis") or ["👍"]),
         gif_urls=list(data.get("gif_urls") or []),
         gif_topic_map=dict(data.get("gif_topic_map") or {}),
         bot_personas=list(data.get("bot_personas") or []),
@@ -106,6 +110,8 @@ def build_prompt(
         "Sometimes ask a short follow-up question. "
         "Keep it natural and human, not overly formal."
     )
+    language_rule = "All replies must be in Russian."
+    greeting_rule = "Do not use greetings or farewells in every message, only first and last (no 'привет', 'здравствуйте', 'пока', etc.)."
     return (
         "System:\n"
         "You are a participant in a group chat. Follow the style and topic strictly.\n"
@@ -114,7 +120,7 @@ def build_prompt(
         "Conversation (latest messages):\n"
         f"{context_text}\n\n"
         f"Continue the conversation naturally. {length_rule} {emoji_rule}\n"
-        f"Additional rules: {variety_rules}"
+        f"Additional rules: {variety_rules} {language_rule} {greeting_rule}"
     )
 
 
@@ -353,6 +359,18 @@ async def main() -> None:
 
         await send_message_or_gif(bot_client, msg, reply_to=reply_to_event.message.id)
 
+    async def maybe_react(event) -> None:
+        if random.random() >= cfg.reaction_probability:
+            return
+        if not cfg.reaction_emojis:
+            return
+        try:
+            reactor = random.choice(clients)
+            reaction = random.choice(cfg.reaction_emojis)
+            await reactor.send_reaction(cfg.group_id, event.message.id, reaction)
+        except Exception as exc:
+            logging.debug("Failed to react: %s", exc)
+
     @admin_client.on(events.NewMessage)
     async def on_admin_private(event) -> None:
         nonlocal topic
@@ -377,6 +395,7 @@ async def main() -> None:
         sender_name = sender.first_name or sender.username or str(sender.id)
         logging.info("Incoming message from %s: %s", sender_name, text)
         await context_store.add(sender_name, text)
+        await maybe_react(event)
 
         if event.is_reply:
             reply_msg = await event.get_reply_message()
