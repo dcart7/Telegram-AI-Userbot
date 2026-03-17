@@ -97,7 +97,7 @@ def load_config(path: str = "config.yaml") -> Config:
         emoji_probability=float(data.get("emoji_probability", 0.25)),
         short_reply_probability=float(data.get("short_reply_probability", 0.5)),
         gif_probability=float(data.get("gif_probability", 0.05)),
-        reaction_probability=float(data.get("reaction_probability", 0.12)),
+        reaction_probability=float(data.get("reaction_probability", 0.3)),
         reaction_emojis=list(data.get("reaction_emojis") or ["👍"]),
         gif_urls=list(data.get("gif_urls") or []),
         gif_topic_map=dict(data.get("gif_topic_map") or {}),
@@ -122,7 +122,7 @@ def build_prompt(
 ) -> str:
     context_text = "\n".join(context)
     emoji_rule = (
-        "Optionally add one fitting emoji at the end."
+        "Emojis are allowed. If you use one, it may appear within the text, not only at the end."
         if use_emoji
         else "Do not use emojis."
     )
