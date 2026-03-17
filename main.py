@@ -11,6 +11,8 @@ from openai import OpenAI
 from redis.asyncio import Redis
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import ReactionEmoji
 
 
 @dataclass
@@ -364,12 +366,33 @@ async def main() -> None:
             return
         if not cfg.reaction_emojis:
             return
+        if not event.message or not getattr(event.message, "id", None):
+            return
         try:
             reactor = random.choice(clients)
             reaction = random.choice(cfg.reaction_emojis)
-            await reactor.send_reaction(cfg.group_id, event.message.id, reaction)
+            peer = await reactor.get_input_entity(cfg.group_id)
+            await reactor(
+                SendReactionRequest(
+                    peer=peer,
+                    msg_id=event.message.id,
+                    reaction=[ReactionEmoji(emoticon=reaction)],
+                )
+            )
+            reactor_me = await reactor.get_me()
+            reactor_name = bot_names.get(reactor_me.id, "bot")
+            logging.info(
+                "Reacted as %s with %s to message %s",
+                reactor_name,
+                reaction,
+                event.message.id,
+            )
         except Exception as exc:
-            logging.debug("Failed to react: %s", exc)
+            logging.warning(
+                "Failed to react: %s (%s)",
+                exc,
+                exc.__class__.__name__,
+            )
 
     @admin_client.on(events.NewMessage)
     async def on_admin_private(event) -> None:

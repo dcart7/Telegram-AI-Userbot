@@ -33,6 +33,10 @@ gif_probability: 0.05
 reaction_probability: 0.12
 reaction_emojis:
   - "👍"
+  - "😂"
+  - "🤔"
+  - "😍"
+  - "❤️"
 
 # Optional: per-bot personas in the same order as sessions/session_paths
 bot_personas:
