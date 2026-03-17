@@ -49,10 +49,5 @@ redis_key_prefix: "tg_userbot"
 # Optional: list of fallback GIF URLs
 gif_urls:
   - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"
-
-# Optional: topic keyword -> list of GIF URLs
-gif_topic_map:
-  startups:
-    - "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
-  technology:
-    - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
+  - "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
+  - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
