@@ -38,6 +38,9 @@ delay_max: 40
 prompt: "Group of friends discussing startups and technology"
 
 context_max_messages: 25
+max_context_chars: 1200
+prompt_mode: "compact"
+reply_to_last_probability: 0.25
 emoji_probability: 0.25
 short_reply_probability: 0.5
 gif_probability: 0.05
@@ -48,6 +51,42 @@ reaction_emojis:
   - "🤔"
   - "😍"
   - "❤️"
+
+# More natural typing simulation (seconds and speed)
+typing_base_min: 0.4
+typing_base_max: 1.6
+typing_min_delay: 0.8
+typing_max_delay: 8.0
+typing_chars_per_second_min: 8.0
+typing_chars_per_second_max: 18.0
+
+# Sometimes split a reply into two parts
+split_message_probability: 0.18
+split_min_chars: 50
+split_max_chars: 240
+
+# Contextual emojis for message tone (optional)
+emoji_context_map:
+  angry: ["😡", "😠"]
+  happy: ["😄", "😁", "😅"]
+  sad: ["😔", "🥲"]
+  question: ["🤔", "❓"]
+  surprise: ["😮", "🤯"]
+  agree: ["✅", "👍"]
+  neutral: ["🙂"]
+
+# Contextual reactions (optional)
+reaction_context_map:
+  angry: ["😡", "😠"]
+  happy: ["😂", "😁", "👍"]
+  sad: ["😔", "🥲"]
+  question: ["🤔", "❓"]
+  surprise: ["😮", "🤯"]
+  agree: ["👍", "✅"]
+  neutral: ["🙂", "👀"]
+
+# Scale control (max parallel LLM requests)
+max_parallel_requests: 4
 
 # Optional: per-bot personas in the same order as sessions/session_paths
 bot_personas:
@@ -61,8 +100,34 @@ bot_personas:
 redis_url: "redis://localhost:6379/0"
 redis_key_prefix: "tg_userbot"
 
+# xAI model to use (examples: grok-3-fast)
+xai_model: "grok-3-fast"
+
 # Optional: list of fallback GIF URLs
 gif_urls:
   - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"
   - "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
   - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
+
+# Contextual GIFs by tone (optional)
+gif_tone_probability: 0.6
+gif_context_map:
+  angry:
+    - "https://media.giphy.com/media/11tTNkNy1SdXGg/giphy.gif"
+    - "https://media.giphy.com/media/l1J9u3TZfpmeDLkD6/giphy.gif"
+  happy:
+    - "https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif"
+    - "https://media.giphy.com/media/3o7TKSjRrfIPjeiVy8/giphy.gif"
+  laugh:
+    - "https://media.giphy.com/media/3o6Zt481isNVuQI1l6/giphy.gif"
+    - "https://media.giphy.com/media/1r91ZwKcE2J7WhUqrh/giphy.gif"
+  sad:
+    - "https://media.giphy.com/media/ROF8OQvDmxytW/giphy.gif"
+  surprise:
+    - "https://media.giphy.com/media/12NUbkX6p4xOO4/giphy.gif"
+  agree:
+    - "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif"
+  question:
+    - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
+  neutral:
+    - "https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif"

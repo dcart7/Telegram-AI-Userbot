@@ -6,8 +6,10 @@ Userbot that simulates a natural group chat using multiple Telegram user account
 - Multiple user accounts (Telethon string sessions or `.session` files).
 - Shared prompt and shared context per group.
 - Random bot selection (no same account twice in a row).
-- Random delay and typing simulation.
+- Random delay and realistic typing simulation (length-aware).
 - Reply handling: if a real user replies to a bot, the bot replies in-thread.
+- Optional split replies: one main message plus a short in-thread continuation.
+- Contextual reactions and emoji hints based on message tone.
 - Optional realism: short replies, emojis, GIFs (low probability).
 - Admin can change topic via private message; context is reset on topic change.
 
@@ -53,9 +55,13 @@ delay_max: 40
 prompt: "Group of friends discussing startups and technology"
 
 context_max_messages: 25
+max_context_chars: 1200
+prompt_mode: "compact"
+reply_to_last_probability: 0.25
 emoji_probability: 0.25
 short_reply_probability: 0.5
 gif_probability: 0.05
+split_message_probability: 0.18
 
 bot_personas:
   - "Thoughtful and playful; reflects a bit, then shares lighthearted everyday AI uses."
@@ -102,6 +108,8 @@ venv/bin/python main.py
 - If you need string sessions, generate them via Telethon once per account.
 - GIFs use public URLs; replace with your own lists per topic in `config.yaml`.
 - If `redis_url` is set, Redis stores the shared context (recommended for persistence).
+- You can tune typing realism with `typing_*` settings and tone-aware emojis/reactions/GIFs using `*_context_map`.
+- GIF tone selection can be tuned with `gif_tone_probability`.
 
 ## Mini-presentation (summary)
 **Architecture**

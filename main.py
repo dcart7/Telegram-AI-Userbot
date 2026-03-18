@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -38,9 +39,27 @@ class Config:
     reaction_emojis: List[str]
     gif_urls: List[str]
     gif_topic_map: Dict[str, List[str]]
+    gif_context_map: Dict[str, List[str]]
     bot_personas: List[str]
     redis_url: str
     redis_key_prefix: str
+    xai_model: str
+    prompt_mode: str
+    max_context_chars: int
+    reply_to_last_probability: float
+    typing_base_min: float
+    typing_base_max: float
+    typing_min_delay: float
+    typing_max_delay: float
+    typing_chars_per_second_min: float
+    typing_chars_per_second_max: float
+    split_message_probability: float
+    split_min_chars: int
+    split_max_chars: int
+    emoji_context_map: Dict[str, List[str]]
+    reaction_context_map: Dict[str, List[str]]
+    max_parallel_requests: int
+    gif_tone_probability: float
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -87,6 +106,17 @@ def load_config(path: str = "config.yaml") -> Config:
             )
         )
 
+    def normalize_context_map(raw: Dict[str, object]) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {}
+        for key, value in (raw or {}).items():
+            if not isinstance(key, str):
+                key = str(key)
+            if isinstance(value, list):
+                items = [str(x) for x in value if str(x).strip()]
+                if items:
+                    result[key.strip().lower()] = items
+        return result
+
     return Config(
         groups=groups,
         sessions=list(data.get("sessions") or []),
@@ -101,9 +131,35 @@ def load_config(path: str = "config.yaml") -> Config:
         reaction_emojis=list(data.get("reaction_emojis") or ["👍"]),
         gif_urls=list(data.get("gif_urls") or []),
         gif_topic_map=dict(data.get("gif_topic_map") or {}),
+        gif_context_map=normalize_context_map(data.get("gif_context_map") or {}),
         bot_personas=list(data.get("bot_personas") or []),
         redis_url=str(data.get("redis_url", "")).strip(),
         redis_key_prefix=str(data.get("redis_key_prefix", "tg_userbot")).strip(),
+        typing_base_min=float(data.get("typing_base_min", 0.4)),
+        typing_base_max=float(data.get("typing_base_max", 1.6)),
+        typing_min_delay=float(data.get("typing_min_delay", 0.8)),
+        typing_max_delay=float(data.get("typing_max_delay", 8.0)),
+        typing_chars_per_second_min=float(
+            data.get("typing_chars_per_second_min", 8.0)
+        ),
+        typing_chars_per_second_max=float(
+            data.get("typing_chars_per_second_max", 18.0)
+        ),
+        split_message_probability=float(data.get("split_message_probability", 0.18)),
+        split_min_chars=int(data.get("split_min_chars", 50)),
+        split_max_chars=int(data.get("split_max_chars", 240)),
+        emoji_context_map=normalize_context_map(data.get("emoji_context_map") or {}),
+        reaction_context_map=normalize_context_map(
+            data.get("reaction_context_map") or {}
+        ),
+        max_parallel_requests=int(data.get("max_parallel_requests", 4)),
+        gif_tone_probability=float(data.get("gif_tone_probability", 0.6)),
+        xai_model=str(data.get("xai_model", "grok-3-fast")).strip(),
+        prompt_mode=str(data.get("prompt_mode", "compact")).strip(),
+        max_context_chars=int(data.get("max_context_chars", 1200)),
+        reply_to_last_probability=float(
+            data.get("reply_to_last_probability", 0.25)
+        ),
     )
 
 
@@ -119,6 +175,12 @@ def build_prompt(
     use_emoji: bool,
     short_reply: bool,
     persona: str,
+    focus_message: Optional[str],
+    reply_context: Optional[str],
+    allow_split: bool,
+    split_token: str,
+    emoji_hint: Optional[str],
+    prompt_mode: str,
 ) -> str:
     context_text = "\n".join(context)
     emoji_rule = (
@@ -126,6 +188,8 @@ def build_prompt(
         if use_emoji
         else "Do not use emojis."
     )
+    if use_emoji and emoji_hint:
+        emoji_rule = f"{emoji_rule} Prefer emojis that match tone: {emoji_hint}."
     length_rule = (
         "Reply with a very short message (3-8 words)."
         if short_reply
@@ -139,8 +203,42 @@ def build_prompt(
         "Sometimes ask a short follow-up question. "
         "Keep it natural and human, not overly formal."
     )
+    accuracy_rules = (
+        "Be specific and grounded in the last message. "
+        "If replying, address it directly and clearly. "
+        "Avoid generic filler."
+    )
+    casual_rule = (
+        "Write like a real chat: short fragments, simple words, "
+        "occasional lowercase starts or ellipses, no formal tone."
+    )
+    language_rule = "Reply in the same language as the latest human message."
     greeting_rule = "Do not use greetings or farewells in every message, only occasionally."
-    return (
+    focus_rule = (
+        f"Message to respond to: {focus_message}\n"
+        if focus_message
+        else "No direct message to respond to.\n"
+    )
+    reply_rule = ""
+    if allow_split and reply_context:
+        reply_rule = (
+            f"If you decide to split, output exactly two parts separated by {split_token}. "
+            "Part 1 is the main message about the current topic. "
+            f"Part 2 is a short continuation that replies to: {reply_context}. "
+            "If you do not split, output a single message without the token."
+        )
+    compact = (
+        "System:\n"
+        "You are in a group chat. Follow style and topic.\n"
+        f"{persona_line}"
+        f"Style: {base_prompt}\n"
+        f"Topic: {topic_prompt}\n"
+        f"Recent messages:\n{context_text}\n"
+        f"{focus_rule}\n"
+        f"Rules: {length_rule} {emoji_rule} {language_rule} {accuracy_rules}\n"
+        f"{variety_rules} {casual_rule} {greeting_rule} {reply_rule}"
+    )
+    full = (
         "System:\n"
         "You are a participant in a group chat. Follow the style and topic strictly.\n"
         f"{persona_line}"
@@ -148,9 +246,11 @@ def build_prompt(
         f"Current topic: {topic_prompt}\n\n"
         "Conversation (latest messages):\n"
         f"{context_text}\n\n"
+        f"{focus_rule}\n"
         f"Continue the conversation naturally. {length_rule} {emoji_rule}\n"
-        f"Additional rules: {variety_rules} {greeting_rule}"
+        f"Additional rules: {variety_rules} {accuracy_rules} {language_rule} {greeting_rule} {reply_rule}"
     )
+    return full if prompt_mode.lower() == "full" else compact
 
 
 def clamp_short_message(
@@ -181,6 +281,20 @@ def clamp_short_message(
             cut = cut[:last_space].rstrip()
         result = cut + "…"
     return result
+
+
+def trim_context(context: List[str], max_chars: int) -> List[str]:
+    if max_chars <= 0:
+        return []
+    total = 0
+    trimmed: List[str] = []
+    for item in reversed(context):
+        item_len = len(item) + 1
+        if total + item_len > max_chars:
+            break
+        trimmed.append(item)
+        total += item_len
+    return list(reversed(trimmed))
 
 
 class ContextStore:
@@ -234,6 +348,147 @@ class RedisContextStore(ContextStore):
         await self._redis.delete(self._key)
 
 
+def infer_tone(text: str) -> str:
+    if not text:
+        return "neutral"
+    lower = text.lower()
+    patterns = {
+        "angry": [
+            r"\bидиот\w*\b",
+            r"\bтуп(ой|ая|ые|о|ость)?\b",
+            r"\bбес\w*\b",
+            r"\bненавижу\b",
+            r"\bзл(ой|ая|ость|ишь|ит)\b",
+            r"\bагресс\w*\b",
+            r"\bубью\b",
+            r"\bсука\b",
+            r"\bfuck\b",
+            r"\bhate\b",
+            r"\bangry\b",
+            r"\bstupid\b",
+        ],
+        "sad": [
+            r"\bгруст\w*\b",
+            r"\bпечал\w*\b",
+            r"\bплохо\b",
+            r"\bустал\w*\b",
+            r"\bодинок\w*\b",
+            r"\bдепресс\w*\b",
+            r"\bsad\b",
+            r"\btired\b",
+            r"\blonely\b",
+            r"\bdepress\w*\b",
+        ],
+        "happy": [
+            r"\bкласс\b",
+            r"\bсупер\b",
+            r"\bрад\b",
+            r"\bкруто\b",
+            r"\bnice\b",
+            r"\bawesome\b",
+            r"\bgreat\b",
+            r"\bура\b",
+        ],
+        "laugh": [
+            r"\bаха+\b",
+            r"\bхаха+\b",
+            r"\bлол\b",
+            r"\blol\b",
+            r"\blmao\b",
+            r"\brofl\b",
+        ],
+        "surprise": [
+            r"\bого\b",
+            r"\bвау\b",
+            r"\bничего себе\b",
+            r"\bwow\b",
+            r"\bwhoa\b",
+        ],
+        "agree": [
+            r"\bсогласен\b",
+            r"\bточно\b",
+            r"\bда\b",
+            r"\bверно\b",
+            r"\bagree\b",
+            r"\btrue\b",
+            r"\byep\b",
+        ],
+        "question": [
+            r"\bпочему\b",
+            r"\bзачем\b",
+            r"\bкак\b",
+            r"\bчто\b",
+            r"\bwhen\b",
+            r"\bwhy\b",
+            r"\bwhat\b",
+            r"\bhow\b",
+        ],
+    }
+
+    emoji_hits = {
+        "angry": ["😡", "😠", "🤬", "👿"],
+        "sad": ["😢", "😭", "🥲", "😔"],
+        "happy": ["😄", "😁", "😊", "🙂", "😃"],
+        "laugh": ["😂", "🤣", "😹"],
+        "surprise": ["😮", "😲", "🤯", "😱"],
+        "agree": ["👍", "✅", "👌"],
+        "question": ["❓", "🤔"],
+    }
+
+    scores: Dict[str, int] = {k: 0 for k in patterns.keys()}
+    for tone, regexes in patterns.items():
+        for rx in regexes:
+            scores[tone] += len(re.findall(rx, lower))
+
+    for tone, emojis in emoji_hits.items():
+        for emo in emojis:
+            if emo in text:
+                scores[tone] += 2
+
+    question_marks = text.count("?") + text.count("？")
+    if question_marks:
+        scores["question"] += 1 + question_marks // 2
+
+    exclamations = text.count("!") + text.count("！")
+    if exclamations >= 2:
+        scores["angry"] += 1
+        scores["surprise"] += 1
+
+    best_tone = "neutral"
+    best_score = 0
+    for tone, score in scores.items():
+        if score > best_score:
+            best_score = score
+            best_tone = tone
+
+    return best_tone if best_score > 0 else "neutral"
+
+
+def pick_contextual_emojis(
+    tone: str, context_map: Dict[str, List[str]], fallback: List[str]
+) -> List[str]:
+    if context_map:
+        key = tone.lower().strip()
+        if key in context_map and context_map[key]:
+            return context_map[key]
+        if "neutral" in context_map and context_map["neutral"]:
+            return context_map["neutral"]
+    return fallback
+
+
+def split_response(text: str, token: str) -> List[str]:
+    if not text:
+        return []
+    if token not in text:
+        return [text]
+    parts = [p.strip() for p in text.split(token) if p.strip()]
+    if not parts:
+        return []
+    if len(parts) > 2:
+        return [parts[0], " ".join(parts[1:]).strip()]
+    return parts
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -253,6 +508,7 @@ async def main() -> None:
 
     cfg = load_config()
     xai_client = OpenAI(base_url="https://api.x.ai/v1", api_key=xai_key)
+    llm_semaphore = asyncio.Semaphore(max(1, cfg.max_parallel_requests))
 
     clients: List[TelegramClient] = []
     if cfg.session_paths:
@@ -316,6 +572,8 @@ async def main() -> None:
             "last_index": None,
             "delay_min": group.delay_min,
             "delay_max": group.delay_max,
+            "last_human_message_id": None,
+            "last_human_message_text": "",
         }
 
     def get_persona(idx: int) -> str:
@@ -324,20 +582,55 @@ async def main() -> None:
         return ""
 
     async def generate_message(
-        base_prompt: str, topic_value: str, ctx: List[str], persona: str
-    ) -> str:
+        base_prompt: str,
+        topic_value: str,
+        ctx: List[str],
+        persona: str,
+        focus_message: Optional[str],
+        reply_context: Optional[str],
+        allow_split: bool,
+        emoji_hint: Optional[str],
+    ) -> List[str]:
         use_emoji = random.random() < cfg.emoji_probability
         short_reply = random.random() < cfg.short_reply_probability
-        prompt = build_prompt(base_prompt, topic_value, ctx, use_emoji, short_reply, persona)
-        response = await asyncio.to_thread(
-            xai_client.responses.create,
-            model="grok-3-fast",
-            input=prompt,
+        split_token = "<SPLIT>"
+        trimmed_ctx = trim_context(ctx, cfg.max_context_chars)
+        prompt = build_prompt(
+            base_prompt,
+            topic_value,
+            trimmed_ctx,
+            use_emoji,
+            short_reply,
+            persona,
+            focus_message,
+            reply_context,
+            allow_split,
+            split_token,
+            emoji_hint,
+            cfg.prompt_mode,
         )
+        async with llm_semaphore:
+            response = await asyncio.to_thread(
+                xai_client.responses.create,
+                model=cfg.xai_model,
+                input=prompt,
+            )
         text = response.output_text
-        return clamp_short_message(text)
+        parts = split_response(text, split_token) or []
+        cleaned_parts = []
+        for idx, part in enumerate(parts):
+            max_chars = cfg.split_max_chars if idx == 0 else cfg.split_max_chars
+            cleaned = clamp_short_message(part, max_chars=max_chars)
+            if cleaned:
+                cleaned_parts.append(cleaned)
+        return cleaned_parts
 
-    def choose_gif_url(topic_value: str) -> Optional[str]:
+    def choose_gif_url(topic_value: str, tone: str) -> Optional[str]:
+        use_tone = random.random() < cfg.gif_tone_probability
+        if use_tone and cfg.gif_context_map:
+            pool = pick_contextual_emojis(tone, cfg.gif_context_map, [])
+            if pool:
+                return random.choice(pool)
         topic_lower = topic_value.lower()
         for key, urls in cfg.gif_topic_map.items():
             if key.lower() in topic_lower and urls:
@@ -346,19 +639,36 @@ async def main() -> None:
             return random.choice(cfg.gif_urls)
         return None
 
+    def estimate_typing_delay(text: str) -> float:
+        char_count = max(1, len(text))
+        base = random.uniform(cfg.typing_base_min, cfg.typing_base_max)
+        cps = random.uniform(
+            cfg.typing_chars_per_second_min, cfg.typing_chars_per_second_max
+        )
+        delay = base + (char_count / max(1.0, cps))
+        return max(cfg.typing_min_delay, min(cfg.typing_max_delay, delay))
+
+    async def simulate_typing(
+        bot_client: TelegramClient, group_id: int, text: str
+    ) -> None:
+        delay = estimate_typing_delay(text)
+        async with bot_client.action(group_id, "typing"):
+            await asyncio.sleep(delay)
+
     async def send_message_or_gif(
         group_id: int,
         bot_client: TelegramClient,
         msg: str,
         reply_to: Optional[int] = None,
+        allow_gif: bool = True,
+        tone: str = "neutral",
     ) -> None:
         state = group_states[group_id]
         topic = str(state["topic"])
-        use_gif = random.random() < cfg.gif_probability
-        gif_url = choose_gif_url(topic) if use_gif else None
+        use_gif = allow_gif and random.random() < cfg.gif_probability
+        gif_url = choose_gif_url(topic, tone) if use_gif else None
 
-        async with bot_client.action(group_id, "typing"):
-            await asyncio.sleep(random.randint(1, 3))
+        await simulate_typing(bot_client, group_id, msg)
 
         if gif_url:
             caption = msg if len(msg) <= 120 else None
@@ -391,6 +701,43 @@ async def main() -> None:
         await context_store.add(bot_names.get(bot_me.id, "bot"), msg)
         state["last_index"] = bot_index_by_id.get(bot_me.id)
 
+    async def send_text_parts(
+        group_id: int,
+        bot_client: TelegramClient,
+        parts: List[str],
+        reply_target_id: Optional[int],
+        tone: str,
+        reply_single_to_id: Optional[int] = None,
+    ) -> None:
+        if not parts:
+            return
+        if len(parts) == 1:
+            await send_message_or_gif(
+                group_id,
+                bot_client,
+                parts[0],
+                reply_to=reply_single_to_id,
+                tone=tone,
+            )
+            return
+            await send_message_or_gif(
+                group_id,
+                bot_client,
+                parts[0],
+                reply_to=None,
+                allow_gif=False,
+                tone="neutral",
+            )
+            await asyncio.sleep(random.uniform(0.6, 1.5))
+            await send_message_or_gif(
+                group_id,
+                bot_client,
+                parts[1],
+                reply_to=reply_target_id,
+                allow_gif=False,
+                tone="neutral",
+            )
+
     async def send_reply(
         group_id: int, reply_to_event, bot_client: TelegramClient, bot_idx: int
     ) -> None:
@@ -410,13 +757,48 @@ async def main() -> None:
         ctx = await context_store.get_recent()
         base_prompt = str(state["base_prompt"])
         topic = str(state["topic"])
-        msg = await generate_message(base_prompt, topic, ctx, persona)
-        if not msg:
+        reply_target_text = None
+        reply_target_id = None
+        if reply_to_event.is_reply:
+            reply_msg = await reply_to_event.get_reply_message()
+            if reply_msg:
+                reply_target_text = reply_msg.message or ""
+                reply_target_id = reply_msg.id
+        tone = infer_tone(text or reply_target_text or "")
+        emoji_hint_list = pick_contextual_emojis(
+            tone, cfg.emoji_context_map, cfg.reaction_emojis
+        )
+        emoji_hint = " ".join(emoji_hint_list) if emoji_hint_list else None
+        allow_split = (
+            bool(reply_target_text)
+            and len(text) >= cfg.split_min_chars
+            and random.random() < cfg.split_message_probability
+        )
+        parts = await generate_message(
+            base_prompt,
+            topic,
+            ctx,
+            persona,
+            text,
+            reply_target_text,
+            allow_split,
+            emoji_hint,
+        )
+        if not parts:
             return
 
-        await send_message_or_gif(
-            group_id, bot_client, msg, reply_to=reply_to_event.message.id
-        )
+        if len(parts) == 1:
+            await send_message_or_gif(
+                group_id,
+                bot_client,
+                parts[0],
+                reply_to=reply_to_event.message.id,
+                tone=tone,
+            )
+        else:
+            await send_text_parts(
+                group_id, bot_client, parts, reply_target_id, tone=tone
+            )
 
     async def maybe_react(event) -> None:
         if random.random() >= cfg.reaction_probability:
@@ -427,7 +809,11 @@ async def main() -> None:
             return
         try:
             reactor = random.choice(clients)
-            reaction = random.choice(cfg.reaction_emojis)
+            tone = infer_tone(event.message.message or "")
+            pool = pick_contextual_emojis(
+                tone, cfg.reaction_context_map, cfg.reaction_emojis
+            )
+            reaction = random.choice(pool) if pool else random.choice(cfg.reaction_emojis)
             peer = await reactor.get_input_entity(event.chat_id)
             await reactor(
                 SendReactionRequest(
@@ -483,9 +869,18 @@ async def main() -> None:
             admin_name = bot_names.get((await admin_client.get_me()).id, "admin")
             ctx = []
             base_prompt = str(state["base_prompt"])
-            msg = await generate_message(base_prompt, topic_text, ctx, "")
-            msg = msg or f"{admin_name}: {topic_text}"
-            await send_message_or_gif(group_id, admin_client, msg)
+            parts = await generate_message(
+                base_prompt,
+                topic_text,
+                ctx,
+                "",
+                None,
+                None,
+                False,
+                None,
+            )
+            msg = parts[0] if parts else f"{admin_name}: {topic_text}"
+            await send_message_or_gif(group_id, admin_client, msg, tone="neutral")
             logging.info("Topic changed to: %s (group %s)", topic_text, group_id)
 
     listener_client = admin_client
@@ -510,6 +905,8 @@ async def main() -> None:
             logging.info("Incoming message from %s: %s", sender_name, text)
 
             state = group_states[group_id]
+            state["last_human_message_id"] = event.message.id
+            state["last_human_message_text"] = text
             context_store = state["context_store"]
             await context_store.add(sender_name, text)
             await maybe_react(event)
@@ -549,11 +946,43 @@ async def main() -> None:
             ctx = await context_store.get_recent()
             base_prompt = str(state["base_prompt"])
             topic = str(state["topic"])
-            msg = await generate_message(base_prompt, topic, ctx, persona)
-            if not msg:
+            last_text = str(state.get("last_human_message_text") or "")
+            reply_target_id = state.get("last_human_message_id")
+            reply_to_last = (
+                reply_target_id is not None
+                and random.random() < cfg.reply_to_last_probability
+            )
+            tone = infer_tone(last_text)
+            emoji_hint_list = pick_contextual_emojis(
+                tone, cfg.emoji_context_map, cfg.reaction_emojis
+            )
+            emoji_hint = " ".join(emoji_hint_list) if emoji_hint_list else None
+            allow_split = (
+                bool(last_text)
+                and len(last_text) >= cfg.split_min_chars
+                and random.random() < cfg.split_message_probability
+            )
+            parts = await generate_message(
+                base_prompt,
+                topic,
+                ctx,
+                persona,
+                last_text if reply_to_last else None,
+                last_text if allow_split else None,
+                allow_split,
+                emoji_hint,
+            )
+            if not parts:
                 continue
 
-            await send_message_or_gif(group_id, bot_client, msg)
+            await send_text_parts(
+                group_id,
+                bot_client,
+                parts,
+                reply_target_id,
+                tone=tone,
+                reply_single_to_id=reply_target_id if reply_to_last else None,
+            )
 
     await asyncio.gather(*(conversation_loop(gid) for gid in group_states.keys()))
 
