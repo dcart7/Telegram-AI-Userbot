@@ -42,8 +42,11 @@ max_context_chars: 1200
 prompt_mode: "compact"
 reply_to_last_probability: 0.25
 emoji_probability: 0.25
+emoji_force_probability: 0.0
+emoji_emotional_insert_probability: 0.5
+emoji_mid_probability: 0.35
 short_reply_probability: 0.5
-gif_probability: 0.05
+gif_probability: 0.12
 reaction_probability: 0.12
 reaction_emojis:
   - "👍"
@@ -110,7 +113,7 @@ gif_urls:
   - "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
 
 # Contextual GIFs by tone (optional)
-gif_tone_probability: 0.6
+gif_tone_probability: 1.0
 gif_context_map:
   angry:
     - "https://media.giphy.com/media/11tTNkNy1SdXGg/giphy.gif"

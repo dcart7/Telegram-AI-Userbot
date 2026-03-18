@@ -59,6 +59,9 @@ max_context_chars: 1200
 prompt_mode: "compact"
 reply_to_last_probability: 0.25
 emoji_probability: 0.25
+emoji_force_probability: 0.0
+emoji_emotional_insert_probability: 0.5
+emoji_mid_probability: 0.35
 short_reply_probability: 0.5
 gif_probability: 0.05
 split_message_probability: 0.18

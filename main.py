@@ -60,6 +60,9 @@ class Config:
     reaction_context_map: Dict[str, List[str]]
     max_parallel_requests: int
     gif_tone_probability: float
+    emoji_force_probability: float
+    emoji_emotional_insert_probability: float
+    emoji_mid_probability: float
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -154,6 +157,11 @@ def load_config(path: str = "config.yaml") -> Config:
         ),
         max_parallel_requests=int(data.get("max_parallel_requests", 4)),
         gif_tone_probability=float(data.get("gif_tone_probability", 0.6)),
+        emoji_force_probability=float(data.get("emoji_force_probability", 0.6)),
+        emoji_emotional_insert_probability=float(
+            data.get("emoji_emotional_insert_probability", 0.5)
+        ),
+        emoji_mid_probability=float(data.get("emoji_mid_probability", 0.35)),
         xai_model=str(data.get("xai_model", "grok-3-fast")).strip(),
         prompt_mode=str(data.get("prompt_mode", "compact")).strip(),
         max_context_chars=int(data.get("max_context_chars", 1200)),
@@ -489,6 +497,42 @@ def split_response(text: str, token: str) -> List[str]:
     return parts
 
 
+def ensure_emoji(parts: List[str], emoji_pool: List[str]) -> List[str]:
+    if not parts or not emoji_pool:
+        return parts
+    has_emoji = any(any(emo in part for emo in emoji_pool) for part in parts)
+    if has_emoji:
+        return parts
+    chosen = random.choice(emoji_pool)
+    parts[-1] = f"{parts[-1]} {chosen}".strip()
+    return parts
+
+
+def insert_emoji_naturally(
+    parts: List[str],
+    emoji_pool: List[str],
+    tone: str,
+    mid_probability: float,
+) -> List[str]:
+    if not parts or not emoji_pool:
+        return parts
+    if tone in {"neutral", "agree", "question"}:
+        return parts
+    has_any = any(any(emo in part for emo in emoji_pool) for part in parts)
+    if has_any:
+        return parts
+    chosen = random.choice(emoji_pool)
+    text = parts[-1]
+    words = text.split()
+    if len(words) >= 4 and random.random() < mid_probability:
+        idx = random.randint(1, max(1, len(words) - 2))
+        words.insert(idx, chosen)
+        parts[-1] = " ".join(words)
+    else:
+        parts[-1] = f"{parts[-1]} {chosen}".strip()
+    return parts
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -590,6 +634,8 @@ async def main() -> None:
         reply_context: Optional[str],
         allow_split: bool,
         emoji_hint: Optional[str],
+        emoji_pool: List[str],
+        tone: str,
     ) -> List[str]:
         use_emoji = random.random() < cfg.emoji_probability
         short_reply = random.random() < cfg.short_reply_probability
@@ -623,6 +669,14 @@ async def main() -> None:
             cleaned = clamp_short_message(part, max_chars=max_chars)
             if cleaned:
                 cleaned_parts.append(cleaned)
+        if (
+            use_emoji
+            and cleaned_parts
+            and random.random() < cfg.emoji_emotional_insert_probability
+        ):
+            cleaned_parts = insert_emoji_naturally(
+                cleaned_parts, emoji_pool, tone, cfg.emoji_mid_probability
+            )
         return cleaned_parts
 
     def choose_gif_url(topic_value: str, tone: str) -> Optional[str]:
@@ -783,6 +837,8 @@ async def main() -> None:
             reply_target_text,
             allow_split,
             emoji_hint,
+            emoji_hint_list,
+            tone,
         )
         if not parts:
             return
@@ -878,6 +934,8 @@ async def main() -> None:
                 None,
                 False,
                 None,
+                [],
+                "neutral",
             )
             msg = parts[0] if parts else f"{admin_name}: {topic_text}"
             await send_message_or_gif(group_id, admin_client, msg, tone="neutral")
@@ -971,6 +1029,8 @@ async def main() -> None:
                 last_text if allow_split else None,
                 allow_split,
                 emoji_hint,
+                emoji_hint_list,
+                tone,
             )
             if not parts:
                 continue
