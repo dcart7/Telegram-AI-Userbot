@@ -656,11 +656,20 @@ async def main() -> None:
             cfg.prompt_mode,
         )
         async with llm_semaphore:
-            response = await asyncio.to_thread(
-                xai_client.responses.create,
-                model=cfg.xai_model,
-                input=prompt,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    xai_client.responses.create,
+                    model=cfg.xai_model,
+                    input=prompt,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "LLM request failed: %s (%s)",
+                    exc,
+                    exc.__class__.__name__,
+                )
+                await asyncio.sleep(5)
+                return []
         text = response.output_text
         parts = split_response(text, split_token) or []
         cleaned_parts = []
@@ -774,23 +783,23 @@ async def main() -> None:
                 tone=tone,
             )
             return
-            await send_message_or_gif(
-                group_id,
-                bot_client,
-                parts[0],
-                reply_to=None,
-                allow_gif=False,
-                tone="neutral",
-            )
-            await asyncio.sleep(random.uniform(0.6, 1.5))
-            await send_message_or_gif(
-                group_id,
-                bot_client,
-                parts[1],
-                reply_to=reply_target_id,
-                allow_gif=False,
-                tone="neutral",
-            )
+        await send_message_or_gif(
+            group_id,
+            bot_client,
+            parts[0],
+            reply_to=None,
+            allow_gif=False,
+            tone="neutral",
+        )
+        await asyncio.sleep(random.uniform(0.6, 1.5))
+        await send_message_or_gif(
+            group_id,
+            bot_client,
+            parts[1],
+            reply_to=reply_target_id,
+            allow_gif=False,
+            tone=tone,
+        )
 
     async def send_reply(
         group_id: int, reply_to_event, bot_client: TelegramClient, bot_idx: int
